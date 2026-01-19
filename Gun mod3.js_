@@ -1,0 +1,198 @@
+(()=>{
+    const itemTexture = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA...";
+
+    ModAPI.meta.title("guns");
+    ModAPI.meta.version("1.0");
+    ModAPI.meta.icon(itemTexture);
+    ModAPI.meta.description("Pistol mod with recoil, muzzle flash, crit particles, and TNT sounds");
+
+    ModAPI.require("player");
+
+    function PistolItem() {
+        let recoilSpeed = 0;
+
+        const Item = ModAPI.reflect.getClassById("net.minecraft.item.Item");
+        const ActionResult = ModAPI.reflect.getClassById("net.minecraft.util.ActionResult");
+        const EnumActionResult = ModAPI.reflect.getClassById("net.minecraft.util.EnumActionResult");
+        const EnumHand = ModAPI.reflect.getClassById("net.minecraft.util.EnumHand");
+        const DamageSource = ModAPI.reflect.getClassById("net.minecraft.util.DamageSource");
+        const CreativeTabs = ModAPI.reflect.getClassById("net.minecraft.creativetab.CreativeTabs");
+        const ParticleTypes = ModAPI.reflect.getClassById("net.minecraft.util.EnumParticleTypes");
+
+        const itemSuper = ModAPI.reflect.getSuper(Item, x => x.length === 1);
+
+        function ItemPistol() {
+            itemSuper(this);
+            this.$setMaxStackSize(1);
+            this.$setCreativeTab(CreativeTabs.staticVariables.COMBAT);
+        }
+
+        ModAPI.reflect.prototypeStack(Item, ItemPistol);
+
+        // Recoil update loop
+        ModAPI.addEventListener("update", () => {
+            ModAPI.player.rotationPitch -= recoilSpeed;
+            recoilSpeed *= 0.65;
+        });
+
+        // Raycast for entities
+        function rayCast(player, world, range) {
+            const eye = player.getPositionEyes(1.0);
+            const rt = player.rayTrace(range, 1.0);
+            if (!rt) return null;
+
+            const entities = world.getEntitiesWithinAABBExcludingEntity(
+                player.getRef(),
+                player.getEntityBoundingBox().expand(range, range, range).getRef()
+            ).getCorrective().array;
+
+            let closest = null;
+            let dist = range;
+            let headshot = false;
+
+            for (let e of entities) {
+                if (!e) continue;
+                const bb = e.getEntityBoundingBox().grow(0.3);
+                const hit = bb.calculateIntercept(eye.getRef(), rt.hitVec.getRef());
+                if (hit) {
+                    const d = eye.distanceTo(hit.hitVec.getRef());
+                    if (d < dist) {
+                        dist = d;
+                        closest = e;
+                        headshot = e.getPositionEyes(1.0).distanceTo(hit.hitVec.getRef()) < 0.75;
+                    }
+                }
+            }
+            return closest ? { entity: closest, headshot, targetVec: rt.hitVec } : null;
+        }
+
+        // Bullet trail
+        function spawnBulletTrail(world, startVec, endVec) {
+            const steps = 10;
+            const dx = (endVec.x - startVec.x) / steps;
+            const dy = (endVec.y - startVec.y) / steps;
+            const dz = (endVec.z - startVec.z) / steps;
+
+            for (let i = 0; i <= steps; i++) {
+                world.spawnParticle(
+                    ParticleTypes.staticVariables.SMOKE_NORMAL,
+                    startVec.x + dx * i,
+                    startVec.y + dy * i,
+                    startVec.z + dz * i,
+                    0, 0, 0
+                );
+            }
+        }
+
+        ItemPistol.prototype.$onItemRightClick = function(world, player, hand) {
+            const stack = player.getHeldItem(hand);
+            const data = rayCast(player, world, 16);
+            const eyePos = player.getPositionEyes(1.0);
+
+            // Muzzle flash
+            if (world.isRemote) {
+                const yawRad = -player.rotationYaw * Math.PI / 180;
+                const pitchRad = -player.rotationPitch * Math.PI / 180;
+                const muzzleX = eyePos.x + Math.sin(yawRad) * Math.cos(pitchRad) * 0.5;
+                const muzzleY = eyePos.y + Math.sin(pitchRad) * 0.5;
+                const muzzleZ = eyePos.z + Math.cos(yawRad) * Math.cos(pitchRad) * 0.5;
+
+                for (let i = 0; i < 6; i++) {
+                    world.spawnParticle(
+                        ParticleTypes.staticVariables.FLAME,
+                        muzzleX + Math.random()*0.1-0.05,
+                        muzzleY + Math.random()*0.1-0.05,
+                        muzzleZ + Math.random()*0.1-0.05,
+                        0, 0, 0
+                    );
+                }
+            }
+
+            if (!world.isRemote) {
+                if (data) {
+                    const dmg = 6 + (data.headshot ? 14 : 0);
+                    data.entity.attackEntityFrom(DamageSource.staticVariables.GENERIC, dmg);
+
+                    // TNT sound
+                    world.playSound(
+                        null,
+                        player.posX,
+                        player.posY,
+                        player.posZ,
+                        ModAPI.util.str("entity.tnt.primed"),
+                        ModAPI.util.str("players"),
+                        1.0,
+                        1.0
+                    );
+
+                    spawnBulletTrail(world, eyePos, data.targetVec);
+
+                    // Headshot crit particles
+                    if (data.headshot) {
+                        const px = data.entity.posX;
+                        const py = data.entity.posY + data.entity.height / 1.5;
+                        const pz = data.entity.posZ;
+
+                        for (let i = 0; i < 8; i++) {
+                            world.spawnParticle(
+                                ParticleTypes.staticVariables.CRIT,
+                                px + Math.random()*0.3-0.15,
+                                py + Math.random()*0.3,
+                                pz + Math.random()*0.3-0.15,
+                                Math.random()*0.1-0.05,
+                                Math.random()*0.1,
+                                Math.random()*0.1-0.05
+                            );
+                        }
+                        console.log("HEADSHOT! CRIT PARTICLES!");
+                    }
+                } else {
+                    world.playSound(
+                        null,
+                        player.posX,
+                        player.posY,
+                        player.posZ,
+                        ModAPI.util.str("ui.button.click"),
+                        ModAPI.util.str("players"),
+                        0.6,
+                        1.6
+                    );
+                }
+            } else {
+                recoilSpeed += 4;
+            }
+
+            return stack;
+        };
+
+        // Register item (Eaglercraft 1.12.2)
+        if (ModAPI.items) {
+            const pistol = new ItemPistol().$setUnlocalizedName(ModAPI.util.str("pistol"));
+            ModAPI.items["pistol"] = pistol;
+            return pistol;
+        } else {
+            ModAPI.addEventListener("bootstrap", () => {
+                const pistol = new ItemPistol().$setUnlocalizedName(ModAPI.util.str("pistol"));
+                ModAPI.items["pistol"] = pistol;
+                return pistol;
+            });
+        }
+    }
+
+    ModAPI.dedicatedServer.appendCode(PistolItem);
+    const pistol = PistolItem();
+
+    ModAPI.addEventListener("lib:asyncsink", async () => {
+        AsyncSink.L10N.set("item.pistol.name", "Pistol");
+
+        AsyncSink.setFile(
+            "resourcepacks/AsyncSinkLib/assets/minecraft/models/item/pistol.json",
+            JSON.stringify({ parent: "item/generated", textures: { layer0: "items/pistol" } })
+        );
+
+        AsyncSink.setFile(
+            "resourcepacks/AsyncSinkLib/assets/minecraft/textures/items/pistol.png",
+            await (await fetch(itemTexture)).arrayBuffer()
+        );
+    });
+})();
